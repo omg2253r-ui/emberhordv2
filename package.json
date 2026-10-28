@@ -1,0 +1,13 @@
+{
+  "name": "emberhold",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Emberhold: illustrated 2D action game — online on Netlify.",
+  "scripts": {
+    "build": "tar -xzf emberhold-game.tar.gz && node tools/build-site.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": ">=8.1.0 <14"
+  }
+}
