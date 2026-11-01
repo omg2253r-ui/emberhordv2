@@ -9,6 +9,11 @@
 // Rooms are multiplexed over the one connection per player: a peer is in my room once it said so.
 // Everything received is untrusted data from other players.
 //
+// Real-time relay (v9.4): when the site has /api/rt (a Cloudflare Durable Object, cloudflare/_worker.js), every page also
+// opens one WebSocket to it. Signalling and "relay" links then travel over that socket in a few tens of ms instead of
+// the hub's 1-second HTTP polling, and a direct WebRTC attempt that is not working is given up after ~3.5 s instead of 12 s.
+// Without /api/rt (Netlify, or the Durable Object not deployed) nothing changes: the old hub path is used.
+//
 // Load (v8.0.3): presence goes out as a small "delta" (only the fields that changed) to players who said they
 // understand it (`cap: 1` in their greeting), with a full copy every few seconds; updates from others are merged
 // into one change notice per ~50 ms. Nothing here depends on the graphics setting: everyone sees everyone.
@@ -21,6 +26,8 @@ const RELAY_POLL = 1000;       // hub poll while some player is reached through 
 const FULL_EVERY = 4000;        // a full presence copy at least this often (also the keepalive); in between only changes are sent
 const NOTIFY_MS = 50;          // updates from other players are announced to the game at most this often
 const RTC_TIMEOUT = 12000;     // give up on a direct connection and relay instead
+const RTC_TIMEOUT_WS = 3500;   // ...when the real-time socket can carry the relay (a good direct link is up in 1-2 s)
+const WS_PING = 25000;         // keep the socket from being closed for idleness
 const MAX_LINKS = 40;
 const MAX_QUEUE = 240;
 const ROOM_RE = /^[a-z0-9][a-z0-9_.-]{0,47}$/;
@@ -40,6 +47,85 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
   const refusedFns = new Set();
   const useRtc = rtc && typeof RTCPeerConnection === 'function';
   let closed = false, hubOk = false, syncing = false, timer = null, kick = null, lastSync = 0;
+  // real-time relay socket (see header). wsPeers = players currently connected to it.
+  let ws = null, wsOpen = false, wsFails = 0, wsTries = 0, wsTimer = null, wsPingTimer = null;
+  let wsDead = typeof WebSocket !== 'function' || typeof location !== 'object' || !location || !location.href;
+  const wsPeers = new Set();
+  const wsTo = (l) => wsOpen && wsPeers.has(l.peer);
+
+  // ------------------------------------------------------------ real-time relay socket
+  function wsUrl() {
+    const u = new URL(`${base}/rt`, location.href);
+    u.protocol = u.protocol === 'https:' || u.protocol === 'wss:' ? 'wss:' : 'ws:';
+    u.search = new URLSearchParams({ world, peer: myPeer, key: myKey }).toString();
+    return u.toString();
+  }
+  function wsSend(peer, items) {
+    if (!wsOpen || !ws) return false;
+    try {
+      const text = JSON.stringify({ to: peer, items });
+      if (text.length > 90_000) return true;                  // one oversized message: dropped, like the hub path
+      if (ws.bufferedAmount > 2 * 1024 * 1024) return true;   // the link is choking: drop rather than stall
+      ws.send(text);
+      return true;
+    } catch { return false; }
+  }
+  // send one item to a player: over the socket when they are on it, else queue it for the hub
+  function pushOut(l, item) {
+    if (wsTo(l) && wsSend(l.peer, [item])) return;
+    l.out.push(item);
+    nudge();
+  }
+  function flushToWs(l) {
+    if (!l.out.length || !wsTo(l)) return;
+    const items = l.out.splice(0);
+    for (let i = 0; i < items.length; i += 100) wsSend(l.peer, items.slice(i, i + 100));
+  }
+  function wsConnect() {
+    if (closed || ws || wsDead) return;
+    let sock;
+    try { sock = new WebSocket(wsUrl()); } catch { wsDead = true; return; }
+    ws = sock;
+    let opened = false;
+    sock.addEventListener('open', () => {
+      if (ws !== sock) return;
+      opened = true; wsOpen = true; wsFails = 0; wsTries = 0;
+      clearInterval(wsPingTimer);
+      wsPingTimer = setInterval(() => { try { if (ws === sock && sock.readyState === 1) sock.send('{}'); } catch { /* closing */ } }, WS_PING);
+    });
+    sock.addEventListener('message', (e) => {
+      if (ws !== sock || typeof e.data !== 'string' || e.data.length > 256 * 1024) return;
+      let m;
+      try { m = JSON.parse(e.data); } catch { return; }
+      if (!m || typeof m !== 'object') return;
+      if (m.ev === 'peers' && Array.isArray(m.list)) {
+        wsPeers.clear();
+        for (const p of m.list.slice(0, 200)) if (typeof p === 'string' && /^[a-z0-9]{8,24}$/.test(p)) wsPeers.add(p);
+        for (const l of links.values()) flushToWs(l);
+        if (wsPeers.size) nudge();
+      } else if (m.ev === 'join' && typeof m.peer === 'string') {
+        if (/^[a-z0-9]{8,24}$/.test(m.peer)) wsPeers.add(m.peer);
+        const l = links.get(m.peer);
+        if (l) flushToWs(l);
+        nudge();                      // a new player: ask the hub for the roster right now instead of at the next heartbeat
+      } else if (m.ev === 'leave' && typeof m.peer === 'string') {
+        wsPeers.delete(m.peer);
+      } else if (typeof m.from === 'string' && /^[a-z0-9]{8,24}$/.test(m.from) && Array.isArray(m.items)) {
+        onMail({ from: m.from, items: m.items.slice(0, 300) });
+      }
+    });
+    const lost = () => {
+      if (ws !== sock) return;
+      ws = null; wsOpen = false; wsPeers.clear();
+      clearInterval(wsPingTimer);
+      if (!opened && ++wsFails >= 4) wsDead = true;     // the site has no /api/rt: stay on the hub path
+      wsTries++;
+      if (!closed && !wsDead) wsTimer = setTimeout(wsConnect, Math.min(8000, 500 * 2 ** Math.min(wsTries, 5)));
+      schedule();
+    };
+    sock.addEventListener('close', lost);
+    sock.addEventListener('error', lost);
+  }
 
   // ------------------------------------------------------------ hub
   async function post(body) {
@@ -83,6 +169,7 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
       uidVerified = res.uid === myId;
       hubOk = true;
       lastSync = Date.now();
+      if (!ws && !wsDead && !wsTimer) wsConnect();
       onRoster(Array.isArray(res.peers) ? res.peers : []);
       for (const m of res.mail || []) onMail(m);
       if (res.more) schedule(50);
@@ -103,8 +190,8 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
     let wait = ms ?? HEARTBEAT;
     if (ms == null) {
       for (const l of links.values()) {
-        if (l.state === 'relay') wait = Math.min(wait, RELAY_POLL);
-        else if (l.state !== 'open') wait = Math.min(wait, FAST);
+        if (l.state === 'relay') { if (!wsTo(l)) wait = Math.min(wait, RELAY_POLL); }
+        else if (l.state !== 'open') wait = Math.min(wait, wsTo(l) ? 1500 : FAST);
         if (l.out.length) wait = Math.min(wait, l.state === 'relay' ? RELAY_POLL : 120);
       }
       if (!hubOk) wait = Math.max(wait, 2500);
@@ -159,11 +246,11 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
   function tickLinks() {
     const now = Date.now();
     for (const l of links.values()) {
-      if ((l.state === 'offering' || l.state === 'answering' || l.state === 'waiting') && now - l.startedAt > RTC_TIMEOUT) toRelay(l, true);
+      if ((l.state === 'offering' || l.state === 'answering' || l.state === 'waiting') && now - l.startedAt > (wsTo(l) ? RTC_TIMEOUT_WS : RTC_TIMEOUT)) toRelay(l, true);
     }
   }
 
-  function signal(l, sig) { l.out.push({ sig }); nudge(); }
+  function signal(l, sig) { pushOut(l, { sig }); }
 
   function waitIce(pc) {
     if (pc.iceGatheringState === 'complete') return Promise.resolve();
@@ -236,9 +323,9 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
     if (l.state === 'relay' || l.state === 'gone') return;
     closePc(l);
     l.state = 'relay';
-    if (tell) l.out.push({ sig: { type: 'relay' } });
+    if (tell) pushOut(l, { sig: { type: 'relay' } });
     greet(l);
-    nudge();
+    if (l.out.length) nudge();
   }
 
   function drop(l) {
@@ -274,6 +361,7 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
       if (l.dc.bufferedAmount > 4 * 1024 * 1024) return;      // the link is choking: drop rather than stall
       try { l.dc.send(JSON.stringify(env)); } catch { /* closed meanwhile */ }
     } else if (l.state === 'relay') {
+      if (wsTo(l) && wsSend(l.peer, [{ m: env }])) return;
       if (env.t === 'p' && !env.ask) l.out = l.out.filter((x) => !(x.m && x.m.t === 'p' && !x.m.ask && x.m.r === env.r));
       l.out.push({ m: env });
       if (l.out.length > MAX_QUEUE) l.out.splice(0, l.out.length - MAX_QUEUE);
@@ -339,14 +427,16 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
       name, mine: Object.freeze({}), at: Date.now(),
       members() { return [...links.values()].filter((l) => reachable(l) && l.rooms.has(name)); },
       rebuild() {
+        room.dirty = false;
         snapshot = Object.freeze([
           { peer: myPeer, by: myId, isMe: true, sameTab: true, presence: room.mine, updatedAt: room.at },
           ...room.members().map((l) => ({ peer: l.peer, by: l.uid, isMe: false, sameTab: false, presence: l.rooms.get(name).presence, updatedAt: l.rooms.get(name).at })),
         ]);
       },
       // many small updates from other players become one notice every NOTIFY_MS (the game re-reads everyone on each notice)
-      pending: new Set(), pendingTimer: null,
+      pending: new Set(), pendingTimer: null, dirty: false,
       notifyLater(peer) {
+        room.dirty = true;       // peers() rebuilds on demand, so the game always reads the newest position (the notice below is only for UI listeners)
         room.pending.add(peer);
         if (room.pendingTimer) return;
         room.pendingTimer = setTimeout(() => { room.pendingTimer = null; const list = [...room.pending].map((p) => ({ peer: p })); room.pending.clear(); if (list.length) room.notify([], [], list); }, NOTIFY_MS);
@@ -387,7 +477,7 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
           }
           if (!nothing) room.notify([], [], [{ peer: myPeer }]);
         },
-        peers: () => snapshot,
+        peers: () => { if (room.dirty) room.rebuild(); return snapshot; },
         onPeers(fn) { peerFns.add(fn); queueMicrotask(() => { try { fn({ peers: snapshot, joined: snapshot, left: [], updated: [] }); } catch (e) { console.error(e); } }); return () => peerFns.delete(fn); },
         connected: () => hubOk || [...links.values()].some((l) => l.state === 'open'),
         async leave() {
@@ -413,6 +503,7 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
     hubOk = true; lastSync = Date.now();
     onRoster(Array.isArray(res.peers) ? res.peers : []);
     for (const m of res.mail || []) onMail(m);
+    wsConnect();
   } catch {
     closed = true;
     return null;      // no hub here (plain static hosting): the caller falls back to offline
@@ -420,6 +511,7 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
   schedule(FAST);
 
   const leaveHub = () => {
+    try { ws?.close(1000); } catch { /* closing */ }
     for (const l of links.values()) if (l.state === 'open') { try { l.dc.send(JSON.stringify({ t: 'bye' })); } catch { /* closing */ } }
     try { navigator.sendBeacon?.(`${base}/hub`, new Blob([JSON.stringify({ ...auth(), leave: true })], { type: 'application/json' })); } catch { /* page closing */ }
   };
@@ -436,11 +528,11 @@ export async function createMeshNet({ base = '/api', uid, ukey = null, rtc = tru
     onSendRefused(fn) { refusedFns.add(fn); return () => refusedFns.delete(fn); },
     // diagnostics (tests and the settings panel)
     stats() {
-      const s = { open: 0, relay: 0, connecting: 0, hub: hubOk, lastSync, uidVerified };
+      const s = { open: 0, relay: 0, connecting: 0, hub: hubOk, lastSync, uidVerified, rt: wsOpen };
       for (const l of links.values()) { if (l.state === 'open') s.open++; else if (l.state === 'relay') s.relay++; else s.connecting++; }
       return s;
     },
-    close() { if (closed) return; leaveHub(); closed = true; clearTimeout(timer); for (const l of [...links.values()]) drop(l); },
+    close() { if (closed) return; leaveHub(); closed = true; clearTimeout(timer); clearTimeout(wsTimer); clearInterval(wsPingTimer); for (const l of [...links.values()]) drop(l); },
   };
   return net;
 }
