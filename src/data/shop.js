@@ -1,0 +1,22 @@
+// What the camp merchant sells. Prices are in gold. `requires` = stage id that must be cleared.
+export const SHOP_STOCK = Object.freeze([
+  { itemId: 'p_tonic',        price: 30 },
+  { itemId: 'p_luck',         price: 25000 },
+  { itemId: 'm_iron_shard',   price: 18 },
+  { itemId: 'm_beast_hide',   price: 24 },
+  { itemId: 'w_hunter_saber', price: 220 },
+  { itemId: 'w_ronin_katana', price: 220 },
+  { itemId: 'w_twin_fangs',   price: 220 },
+  { itemId: 'w_iron_cleaver', price: 240 },
+  { itemId: 'w_ash_staff',    price: 230 },
+  { itemId: 'w_hunter_bow',   price: 230 },
+  { itemId: 'w_boar_spear',   price: 220 },
+  { itemId: 'w_reaper_hook',  price: 240 },
+  { itemId: 'w_twin_sabers',  price: 240 },
+  { itemId: 'a_wanderer_coat', price: 260, requires: 's1' },
+  { itemId: 'a_hide_vest',    price: 240 },
+  { itemId: 'a_traveler_tunic', price: 120 },
+  { itemId: 'a_militia_mail', price: 300, requires: 's1' },
+  { itemId: 'c_moss_bead',    price: 260, requires: 's1' },
+  { itemId: 'm_thorn_core',   price: 160, requires: 's2' },
+]);
