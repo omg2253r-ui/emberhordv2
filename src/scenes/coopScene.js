@@ -74,8 +74,9 @@ const A = ZONE_ROOM;
 const GONE_AFTER = 4;
 const REVIVE_TIME = 2.5, REVIVE_RANGE = 85;
 const TOWER_REVIVE_RANGE = 120;      // the tower with friends: hold the button beside a downed hero for TOWER_PARTY.reviveTime seconds
-const SEND_EVERY = 0.083;          // presence ~12×/s (shares the room's ~40 msg/s budget with events)
-const EVENTS_EVERY = 0.1;
+const SEND_EVERY = 0.05;           // presence ~20×/s (v9.4: was ~12×/s — a friend's hero and the host's monsters moved in visible steps)
+const EVENTS_EVERY = 0.05;         // batched events (hits, skills, damage numbers) ~20×/s; urgent ones pull the next send forward (see queue)
+const URGENT_EVENTS = new Set(['hit', 'dmg', 'kill', 'hurt', 'sk', 'ult', 's', 'b']);
 const EVENT_BYTES = 3300;
 const PORTAL = { x: A.w - 140, y: A.h / 2 + 20, r: 80 };
 const ENTRY = { x: 170, y: A.h / 2 + 20 };
@@ -248,7 +249,7 @@ export function createCoopScene(app) {
   }
 
   // ------------------------------------------------------------ outgoing events (host and my hits)
-  function queue(ev) { if (w && w.party > 1) w.outbox.push(ev); }
+  function queue(ev) { if (w && w.party > 1) { w.outbox.push(ev); if (URGENT_EVENTS.has(ev[0])) w.evAcc = Math.max(w.evAcc, EVENTS_EVERY * 0.6); } }
   function flush() {
     if (!w.outbox.length) return;
     let batch = [], size = 0;
@@ -953,6 +954,10 @@ export function createCoopScene(app) {
 
   function readEnemies(list, dt) {
     const seen = new Set();
+    // v9.4: the host's monsters are reported ~20×/s; between reports they keep moving at the speed seen in the last two (≤0.12 s)
+    const nowMs = performance.now();
+    const fresh = list !== w.enRef;
+    if (fresh) w.enRef = list;
     for (const row of list.slice(0, 60)) {
       if (!Array.isArray(row)) continue;
       const [id, ti, x, y, hp, maxHp, warn, flags, hidden, z, armor, armorMax, armorPhase, puz] = row;
@@ -961,9 +966,19 @@ export function createCoopScene(app) {
       seen.add(id);
       let v = w.views.get(id);
       if (!v) { v = { id, type: def, r: def.radius, x, y, sx: 1, sy: 1, ai: {}, spawning: 0, dead: false, flash: 0, isView: true }; w.views.set(id, v); app.ensureRig(def.id); }
-      v.tx = num(x, 0, A.w); v.ty = num(y, 0, A.h);
-      const k = Math.min(1, dt * 12);
-      v.x += (v.tx - v.x) * k; v.y += (v.ty - v.y) * k;
+      const ntx = num(x, 0, A.w), nty = num(y, 0, A.h);
+      if (fresh) {
+        const dtS = v.pAt ? (nowMs - v.pAt) / 1000 : 0;
+        if (dtS > 0.015 && dtS < 0.6 && v.tx != null && Math.hypot(ntx - v.tx, nty - v.ty) < 220) {
+          const vx = (ntx - v.tx) / dtS, vy = (nty - v.ty) / dtS, sp = Math.hypot(vx, vy), f = sp > 700 ? 700 / sp : 1;
+          v.evx = vx * f; v.evy = vy * f;
+        } else { v.evx = 0; v.evy = 0; }
+        v.pAt = nowMs;
+      }
+      v.tx = ntx; v.ty = nty;
+      const ahead = v.pAt ? Math.min(0.12, Math.max(0, (nowMs - v.pAt) / 1000)) : 0;
+      const k = 1 - Math.exp(-dt * 18);
+      v.x += (v.tx + (v.evx || 0) * ahead - v.x) * k; v.y += (v.ty + (v.evy || 0) * ahead - v.y) * k;
       v.hp = num(hp, 0, 1e10); v.maxHp = num(maxHp, 1, 1e10, 1); v.warn = num(warn, 0, 10) / 10;
       v.flip = !!(flags & 1); v.guarding = !!(flags & 2); v.untargetable = !!(flags & 4); v.invuln = flags & 8 ? 1 : 0; v.clone = !!(flags & 16); v.hidden = num(hidden, 0, 10) / 10; v.ai.z = num(z, 0, 300);
       v.armor = num(armor, 0, 1e10); v.armorMax = num(armorMax, 0, 1e10); v.armorPhase = num(armorPhase, 0, 3);
