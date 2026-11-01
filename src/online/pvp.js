@@ -76,10 +76,23 @@ export function updateRemoteFighter(r, raw, dt) {
       r.move = { kind: mv.k, step: mv.s | 0, def, phase, t: num(mv.t, 0, 2, 0), dir: num(mv.d, -10, 10, 0) };
     } else { r.move = null; r.moveKey = null; r.newActive = false; }
   }
-  // smooth toward the latest reported position (presence arrives ~20×/s)
-  const k = Math.min(1, dt * 14);
-  r.x = r.x == null ? r.tx : r.x + (r.tx - r.x) * k;
-  r.y = r.y == null ? r.ty : r.y + (r.ty - r.y) * k;
+  // v9.4: dead reckoning. Presence arrives ~20×/s and each report is already a little old when it lands, so drawing the
+  // friend AT the last report always shows them behind. From the last two reports we estimate their speed and keep
+  // them moving (at most 0.14 s ahead, and only while they say they are moving) until the next report arrives.
+  const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (raw && raw !== r.rawSeen) {
+    const dtS = r.pAt ? (nowMs - r.pAt) / 1000 : 0;
+    if (r.rawSeen && r.moving && dtS > 0.015 && dtS < 0.6 && r.ptx != null && Math.hypot(r.tx - r.ptx, r.ty - r.pty) < 260) {
+      const vx = (r.tx - r.ptx) / dtS, vy = (r.ty - r.pty) / dtS, sp = Math.hypot(vx, vy), f = sp > 900 ? 900 / sp : 1;
+      r.evx = vx * f; r.evy = vy * f;
+    } else { r.evx = 0; r.evy = 0; }
+    r.rawSeen = raw; r.ptx = r.tx; r.pty = r.ty; r.pAt = nowMs;
+  }
+  const ahead = r.moving && r.pAt ? Math.min(0.14, Math.max(0, (nowMs - r.pAt) / 1000)) : 0;
+  const gx = r.tx + (r.evx || 0) * ahead, gy = r.ty + (r.evy || 0) * ahead;
+  const k = 1 - Math.exp(-dt * 20);
+  r.x = r.x == null ? gx : r.x + (gx - r.x) * k;
+  r.y = r.y == null ? gy : r.y + (gy - r.y) * k;
   r.walkT = r.moving ? (r.walkT || 0) + dt * 10 : (r.walkT || 0);
   return r;
 }
