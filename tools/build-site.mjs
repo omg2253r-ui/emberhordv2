@@ -2,6 +2,7 @@
 import { cp, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SITE_HEADERS } from '../cloudflare/headers.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const OUT = join(ROOT, 'dist');
@@ -14,16 +15,6 @@ await cp(join(ROOT, 'wiki'), join(OUT, 'wiki'), { recursive: true });
 // mark the page as having the online hub (/api/hub, /api/docs), so the game connects instead of staying offline
 const page = join(OUT, 'index.html');
 await writeFile(page, (await readFile(page, 'utf8')).replace('<head>', '<head>\n  <meta name="emberhold-hub" content="/api">'));
-// Cloudflare Pages (v8): the online code runs as dist/_worker.js (advanced mode); Netlify never gets this file
-if (process.env.CF_PAGES) await cp(join(ROOT, 'cloudflare/_worker.js'), join(OUT, '_worker.js'));
-
 // Cloudflare Workers (static assets): security headers for every page come from dist/_headers
-await writeFile(join(OUT, '_headers'), `/*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'
-  X-Content-Type-Options: nosniff
-  X-Frame-Options: DENY
-  Referrer-Policy: no-referrer
-  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
-  Cross-Origin-Opener-Policy: same-origin
-`);
+await writeFile(join(OUT, '_headers'), '/*\n' + Object.entries(SITE_HEADERS).map(([k, v]) => `  ${k}: ${v}`).join('\n') + '\n');
 console.log('Emberhold site built into dist/');
