@@ -26,12 +26,12 @@ const MAX_BODY = 700 * 1024;
 const MAX_SAVE = 600 * 1024;
 const SESSION_MS = 180 * 24 * 3600 * 1000;
 const LOCK_AFTER = 8, LOCK_MS = 10 * 60 * 1000;
-const NAME_RE = /^[\p{L}\p{M}\p{N}_.-]{3,20}$/u;
-const CODE_RE = /^EMB1\.[A-Za-z0-9_-]{16,}\.[0-9a-f]{32}$/;
+export const NAME_RE = /^[\p{L}\p{M}\p{N}_.-]{3,20}$/u;
+export const CODE_RE = /^EMB1\.[A-Za-z0-9_-]{16,}\.[0-9a-f]{32}$/;
 const TOKEN_RE = /^[a-f0-9]{48}$/;
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
-const sha = (s) => createHash('sha256').update(String(s)).digest('hex');
+export const sha = (s) => createHash('sha256').update(String(s)).digest('hex');
 export const nameKey = (name) => String(name || '').normalize('NFC').trim().toLowerCase();
 const kdf = (pass, salt) => new Promise((res, rej) => scrypt(String(pass).normalize('NFC'), salt, 32, { N: 16384, r: 8, p: 1 }, (e, k) => (e ? rej(e) : res(k.toString('hex')))));
 const readJ = async (kv, k) => { const t = await kv.get(k); if (!t) return null; try { return JSON.parse(t); } catch { return null; } };

@@ -18,8 +18,8 @@ import { createHash } from 'node:crypto';
 
 export const BUCKET_MS = 10_000;
 export const MAIL_TTL_MS = 120_000;
-const PEER_RE = /^[a-z0-9]{8,24}$/;
-const WORLD_RE = /^[a-z0-9]{1,16}$/;
+export const PEER_RE = /^[a-z0-9]{8,24}$/;
+export const WORLD_RE = /^[a-z0-9]{1,16}$/;
 const MAX_BODY = 256 * 1024;
 const MAX_TARGETS = 40;
 const MAX_ITEMS = 300;
@@ -46,11 +46,11 @@ function limited(key, max, windowMs, now) {
 }
 
 const UID_RE = /^u[a-z0-9]{14}$/;
-const KEY_RE = /^[A-Za-z0-9_-]{20,64}$/;
-const hash = (s) => createHash('sha256').update(String(s)).digest('hex');
+export const KEY_RE = /^[A-Za-z0-9_-]{20,64}$/;
+export const hash = (s) => createHash('sha256').update(String(s)).digest('hex');
 // live key: live/<world>/<bucket>/<peer>~<uid or _>~<16 hex of the peer key's hash>
 const liveKey = (world, bucket, peer, uid, h) => `live/${world}/${bucket}/${peer}~${uid || '_'}~${h}`;
-function parseLive(k) {
+export function parseLive(k) {
   const [peer, uid, h] = k.slice(k.lastIndexOf('/') + 1).split('~');
   return PEER_RE.test(peer || '') ? { peer, uid: UID_RE.test(uid || '') ? uid : null, h: h || '', key: k } : null;
 }
