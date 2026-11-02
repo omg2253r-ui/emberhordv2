@@ -1,6 +1,6 @@
 {
   "name": "emberhold",
-  "main": "cloudflare/_worker.js",
+  "main": "cloudflare/worker.mjs",
   "compatibility_date": "2025-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
