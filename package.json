@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node tools/build-site.mjs",
+    "build": "tar -xzf emberhold-game.tar.gz --exclude=wrangler.jsonc --exclude=package.json && node tools/build-site.mjs",
     "test": "node tools/test-worker.mjs && node tools/test-migrate.mjs && node tools/test-proxy.mjs",
-    "deploy:cloudflare": "npm run build && wrangler deploy"
+    "deploy:cloudflare": "npm run build && wrangler deploy",
+    "build:src": "node tools/build-site.mjs"
   },
   "devDependencies": {
     "wrangler": "^4"
