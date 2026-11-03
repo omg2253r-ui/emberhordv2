@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tar -xzf emberhold-game.tar.gz --exclude=wrangler.jsonc --exclude=package.json && node tools/build-site.mjs",
+    "build": "tar -xzf emberhold-game.tar.gz --exclude=wrangler.jsonc --exclude=package.json && (test ! -f emberhold-clips.tar.gz || tar -xzf emberhold-clips.tar.gz) && node tools/build-site.mjs",
     "test": "node tools/test-worker.mjs && node tools/test-migrate.mjs && node tools/test-proxy.mjs",
     "deploy:cloudflare": "npm run build && wrangler deploy",
     "build:src": "node tools/build-site.mjs"
